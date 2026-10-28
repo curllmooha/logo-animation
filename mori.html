@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MORI Letters</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#eceaea}
+  canvas{display:block;position:fixed;inset:0}
+  .vig{position:fixed;inset:0;pointer-events:none;
+    background:radial-gradient(ellipse at 50% 45%,rgba(255,255,255,0) 45%,rgba(120,110,110,.16) 100%)}
+</style>
+</head>
+<body>
+<div class="vig"></div>
+<script type="importmap">
+{"imports":{
+  "three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import {FontLoader} from 'three/addons/loaders/FontLoader.js';
+
+const WORD = 'MORI';
+const LOOP = 10;              // seconds per cycle
+const PIT  = 1.6;
+const HL   = 0.9;             // letter thickness (fits inside the pit)             // depth of the orange pits
+const TILT = THREE.MathUtils.degToRad(22);
+
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.VSMShadowMap;
+renderer.toneMapping = THREE.NoToneMapping;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xeeeceb);
+
+const camera = new THREE.PerspectiveCamera(34, innerWidth/innerHeight, 0.1, 200);
+camera.position.set(0.15, 10.2, 5.2);
+camera.lookAt(0.15, 0, 0.05);
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0xe8e2e0, 1.55));
+const sun = new THREE.DirectionalLight(0xffffff, 2.1);
+sun.position.set(-7, 12, -5);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, {left:-9, right:9, top:9, bottom:-9, near:1, far:40});
+sun.shadow.radius = 9; sun.shadow.blurSamples = 20; sun.shadow.bias = -0.0005;
+scene.add(sun);
+
+const WHITE  = new THREE.MeshStandardMaterial({color:0xfbfbfb, roughness:.9, metalness:0});
+const FLOOR  = new THREE.MeshStandardMaterial({color:0xf3f2f1, roughness:1, metalness:0});
+const ORANGE = new THREE.MeshStandardMaterial({color:0xff5426, roughness:.65, metalness:0,
+  emissive:0xff4a18, emissiveIntensity:.28, side:THREE.DoubleSide});
+
+const board = new THREE.Group();          // lives in XY, rotated flat so +z is "up"
+board.rotation.x = -Math.PI/2;
+scene.add(board);
+
+const xform = (shape, fn) => {
+  const s = new THREE.Shape(shape.getPoints(14).map(fn));
+  s.holes = shape.holes.map(h => new THREE.Path(h.getPoints(14).map(fn)));
+  return s;
+};
+const bbox = pts => {
+  const b = new THREE.Box2(); pts.forEach(p => b.expandByPoint(p)); return b;
+};
+
+new FontLoader().load('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/fonts/droid/droid_sans_bold.typeface.json', font => {
+  // normalise so cap height = 1
+  const mShape = font.generateShapes('M', 1)[0];
+  const cap = bbox(mShape.getPoints(8)).max.y;
+  const k = 1/cap;
+
+  const pitch = 1.62;
+  const letters = [];
+  const floor = new THREE.Shape([
+    new THREE.Vector2(-70,-70), new THREE.Vector2(70,-70),
+    new THREE.Vector2(70,70),   new THREE.Vector2(-70,70)]);
+
+  [...WORD].forEach((ch, i) => {
+    let raw = font.generateShapes(ch, 1);
+    if(ch === 'I'){                                   // plain bar, no serifs
+      const w = .24/(k*1.14), h = cap/k;
+      raw = [new THREE.Shape([new THREE.Vector2(0,0), new THREE.Vector2(w,0),
+                              new THREE.Vector2(w,cap), new THREE.Vector2(0,cap)])];
+    }
+    const all = raw.flatMap(s => s.getPoints(8));
+    const bb = bbox(all);
+    const cx = (bb.min.x+bb.max.x)/2, cy = (bb.min.y+bb.max.y)/2;
+    // centre, scale, stack downward, then tilt whole stack
+    const centreY = -(i - (WORD.length-1)/2) * pitch;
+    const c = Math.cos(TILT), s = Math.sin(TILT);
+    const place = p => {
+      const x = (p.x-cx)*k*1.14, y = (p.y-cy)*k + centreY;
+      return new THREE.Vector2(x*c - y*s, x*s + y*c);
+    };
+    const shapes = raw.map(sh => xform(sh, place));
+    const centre = place(new THREE.Vector2(cx, cy));
+
+    shapes.forEach(sh => {
+      floor.holes.push(new THREE.Path(sh.getPoints(14)));       // hole in the floor
+      // floor islands (counters of O, R...)
+      sh.holes.forEach(h => {
+        const island = new THREE.Mesh(new THREE.ShapeGeometry(new THREE.Shape(h.getPoints(14))), FLOOR);
+        island.receiveShadow = true; island.castShadow = true;
+        board.add(island);
+      });
+      // orange pit: walls + bottom
+      const wallGeo = new THREE.ExtrudeGeometry(sh, {depth:PIT, bevelEnabled:false, curveSegments:14});
+      wallGeo.translate(0,0,-PIT);
+      const hidden = new THREE.MeshBasicMaterial({visible:false});
+      const walls = new THREE.Mesh(wallGeo, [hidden, ORANGE]);
+      walls.receiveShadow = true;
+      board.add(walls);
+      const bottom = new THREE.Mesh(new THREE.ShapeGeometry(sh, 14), ORANGE);
+      bottom.position.z = -PIT; bottom.receiveShadow = true;
+      board.add(bottom);
+    });
+
+    // the white letter that rises out of the pit (centred on its own pivot)
+    const local = shapes.map(sh => xform(sh, p => new THREE.Vector2(p.x-centre.x, p.y-centre.y)));
+    const geo = new THREE.ExtrudeGeometry(local, {depth:HL, bevelEnabled:true, bevelSize:.012,
+      bevelThickness:.012, bevelSegments:2, curveSegments:14});
+    const mesh = new THREE.Mesh(geo, WHITE);
+    mesh.castShadow = mesh.receiveShadow = true;
+    mesh.scale.set(.988,.988,1);
+    board.add(mesh);
+    letters.push({mesh, centre, i,
+      ox:[-1.2,1.0,-.9,1.1][i%4], oy:[.7,-.5,.6,-.8][i%4],
+      rot:[.55,-.5,.45,-.6][i%4], peak:[1.1,1.5,1.2,1.0][i%4]});
+  });
+
+  const floorMesh = new THREE.Mesh(new THREE.ShapeGeometry(floor, 14), FLOOR);
+  floorMesh.receiveShadow = true;
+  board.add(floorMesh);
+
+  // ---------- animation ----------
+  const clamp = (x,a=0,b=1) => Math.min(b,Math.max(a,x));
+  const io = t => t<.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2;
+  const lerp = THREE.MathUtils.lerp;
+  const HOVER = HL + 0.1;                  // just above the floor while sliding
+  // M from the left, O from the right, R from the top, I from the bottom
+  const DIRS = [[-1,0,13],[1,0,13],[0,1,9],[0,-1,9]];
+
+  // returns {h: top height, d: 0 (in place) .. 1 (fully slid out)}
+  const stateAt = t => {
+    if(t < .8)  return {h:HOVER, d:1, hidden:true};
+    if(t < 4.0) return {h:HOVER, d:1-io((t-.8)/3.2)};          // slow slide in
+    if(t < 4.9) return {h:lerp(HOVER,0,io((t-4.0)/.9)), d:0};   // drop flush into the hole
+    if(t < 6.6) return {h:0, d:0};                              // hold, blended with the floor
+    if(t < 7.5) return {h:lerp(0,HOVER,io((t-6.6)/.9)), d:0};   // lift out
+    if(t < 9.7) return {h:HOVER, d:io((t-7.5)/2.2)};            // slow slide out
+    return {h:HOVER, d:1, hidden:true};
+  };
+
+  const clock = new THREE.Clock();
+  const q = new URLSearchParams(location.search).get('t');
+  const FIX = q===null ? null : parseFloat(q);
+  const frame = () => {
+    const T = FIX!==null ? FIX : clock.getElapsedTime();
+    for(const L of letters){
+      const t = (((T - L.i*.45) % LOOP) + LOOP) % LOOP;
+      const st = stateAt(t);
+      const [dx,dy,far] = DIRS[L.i % 4];
+      L.mesh.visible = !st.hidden;
+      L.mesh.position.set(L.centre.x + dx*far*st.d, L.centre.y + dy*far*st.d, st.h - HL);
+    }
+    renderer.render(scene, camera);
+    requestAnimationFrame(frame);
+  };
+  frame();
+});
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
